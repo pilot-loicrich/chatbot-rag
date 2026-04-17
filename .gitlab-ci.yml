@@ -1,0 +1,24 @@
+stages:
+  - test
+  - build
+
+variables:
+  GEMINI_API_KEY: "test-key"
+
+test_api:
+  stage: test
+  image: python:3.10
+  script:
+    - export PYTHONPATH=$PYTHONPATH:.
+    - pip install -r requirements.txt
+    - pytest tests/
+  cache:
+    paths:
+      - .cache/pip
+
+build_docker:
+  stage: build
+  script:
+    - echo "Build Docker image"
+  only:
+    - main
