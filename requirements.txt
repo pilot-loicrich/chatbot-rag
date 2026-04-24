@@ -12,8 +12,9 @@ langchain-chroma>=0.1,<0.2
 # Vector store
 chromadb>=0.5,<1.0
 
-# Document loading
+# Document loaders
 pypdf>=4.0
+docx2txt>=0.8
 
 # API infra
 python-multipart>=0.0.9
