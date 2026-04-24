@@ -1,0 +1,15 @@
+# Normalize line endings for all text files
+* text=auto eol=lf
+
+# Force CRLF for Windows-specific scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Treat these as binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary

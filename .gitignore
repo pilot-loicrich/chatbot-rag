@@ -1,6 +1,25 @@
-﻿.venv/
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Secrets
 .env
+.env.local
+
+# Data
+data/chroma_db/
+data/documents/
 *.db
+
+# OS
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
