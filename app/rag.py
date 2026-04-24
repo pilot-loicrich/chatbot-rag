@@ -1,57 +1,113 @@
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.vectorstores import Chroma
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from app.config import GEMINI_API_KEY, CHROMA_DB_PATH, DOCUMENTS_PATH
-import os
+"""RAG pipeline: PDF ingestion -> ChromaDB -> Gemini LLM (LCEL)."""
 
-def load_and_index_documents(pdf_path: str):
-    """Charge un PDF et l'indexe dans ChromaDB"""
+from __future__ import annotations
+
+from functools import lru_cache
+
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from app.config import CHROMA_DB_PATH, GEMINI_API_KEY
+
+# ---------------------------------------------------------------------------
+# Models & constants
+# ---------------------------------------------------------------------------
+
+EMBEDDING_MODEL = "models/text-embedding-004"
+LLM_MODEL = "gemini-2.0-flash"
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+TOP_K = 4
+
+SYSTEM_PROMPT = (
+    "Tu es un assistant qui répond aux questions en te basant UNIQUEMENT sur le "
+    "contexte fourni ci-dessous. Si la réponse n'est pas dans le contexte, "
+    "dis clairement que tu ne sais pas. Réponds en français, de manière "
+    "concise et structurée.\n\n"
+    "Contexte :\n{context}"
+)
+
+
+# ---------------------------------------------------------------------------
+# Cached singletons (instantiated once per process)
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def get_embeddings() -> GoogleGenerativeAIEmbeddings:
+    return GoogleGenerativeAIEmbeddings(
+        model=EMBEDDING_MODEL,
+        google_api_key=GEMINI_API_KEY,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_vectorstore() -> Chroma:
+    return Chroma(
+        persist_directory=CHROMA_DB_PATH,
+        embedding_function=get_embeddings(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_llm() -> ChatGoogleGenerativeAI:
+    return ChatGoogleGenerativeAI(
+        model=LLM_MODEL,
+        google_api_key=GEMINI_API_KEY,
+        temperature=0.3,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def load_and_index_documents(pdf_path: str) -> int:
+    """Load a PDF, split it into chunks, and index them in ChromaDB.
+
+    Returns the number of chunks indexed.
+    """
     loader = PyPDFLoader(pdf_path)
     documents = loader.load()
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
     )
     chunks = splitter.split_documents(documents)
 
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=GEMINI_API_KEY
-    )
-
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        persist_directory=CHROMA_DB_PATH
-    )
-    vectorstore.persist()
+    vectorstore = get_vectorstore()
+    vectorstore.add_documents(chunks)
     return len(chunks)
 
+
+def _format_docs(docs) -> str:
+    return "\n\n".join(doc.page_content for doc in docs)
+
+
 def ask_question(question: str) -> str:
-    """Pose une question au chatbot RAG"""
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=GEMINI_API_KEY
+    """Answer a question using the indexed documents via a RAG chain (LCEL)."""
+    retriever = get_vectorstore().as_retriever(search_kwargs={"k": TOP_K})
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", SYSTEM_PROMPT),
+            ("human", "{question}"),
+        ]
     )
 
-    vectorstore = Chroma(
-        persist_directory=CHROMA_DB_PATH,
-        embedding_function=embeddings
+    chain = (
+        {
+            "context": retriever | _format_docs,
+            "question": RunnablePassthrough(),
+        }
+        | prompt
+        | get_llm()
+        | StrOutputParser()
     )
 
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-pro",
-        google_api_key=GEMINI_API_KEY,
-        temperature=0.3
-    )
-
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 3})
-    )
-
-    result = qa_chain.invoke({"query": question})
-    return result["result"]
+    return chain.invoke(question)
